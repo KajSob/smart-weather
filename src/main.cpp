@@ -7,6 +7,11 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include "NimBLEDevice.h"
+#include <Firebase_ESP_Client.h>
+
+
+#define API_KEY "AIzaSyDcdQRrCx9wBN-BE_7iKngGp9Vojm59zbM"
+#define DATABASE_URL "https://smartweatherstation-42237-default-rtdb.europe-west1.firebasedatabase.app/"
 
 const char* ca_cert = R"EOF(
 -----BEGIN CERTIFICATE-----
@@ -41,6 +46,20 @@ mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
 emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
 -----END CERTIFICATE-----
 )EOF";
+#define DATABASE_USER "pionier@gmail.com"
+#define DATABASE_PASS "pionier123"
+
+FirebaseData fbdo;
+FirebaseJson firebaseJson;
+FirebaseAuth auth;
+FirebaseConfig config;
+
+
+unsigned long sendDataPrevMillis = 0;
+
+String deviceName = String(WiFi.macAddress());
+
+const char* MQTT_ID = "4tmYZsl99D";
 
 ScioSense_ENS160 ens160(0x53);
 Adafruit_BME280 bme;
@@ -56,7 +75,6 @@ const char* password = "kupsewlasny";
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
-const char* MQTT_ID = "4tmYZsl99D";
 
 #define LED1_PIN 35
 #define LED2_PIN 36
@@ -97,6 +115,26 @@ int s=0;
 float temp_ble = 0;
 float humi_ble = 0;
 float voltage_ble = 0;
+
+void registerDevice(String deviceName)
+{
+  String devicePath = "/devices/";
+
+  FirebaseJson json;
+  json.set("deviceName", deviceName);
+  json.set("MQTT_ID", MQTT_ID);
+
+
+  if (Firebase.RTDB.setJSON(&fbdo, devicePath.c_str(), &json))
+  {
+    Serial.println("Device registered in Firebase successfully!");
+  }
+  else
+  {
+    Serial.print("Failed to register device: ");
+    Serial.println(fbdo.errorReason());
+  }
+}
 
 static void notifyCallback(
   BLERemoteCharacteristic* pBLERemoteCharacteristic,
@@ -259,6 +297,32 @@ void setup() {
   setup_wifi();
   client.setServer(mqtt_server, mqtt_port);
   espClient.setCACert(ca_cert);
+
+  config.api_key = API_KEY;
+  config.database_url = DATABASE_URL;
+  Firebase.reconnectNetwork(true);
+
+  auth.user.email = DATABASE_USER;
+  auth.user.password = DATABASE_PASS;
+
+  Serial.println("Initializing Firebase...");
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+
+  if (Firebase.ready())
+  {
+    Serial.println("Firebase initialized successfully");
+  }
+  else
+  {
+    Serial.println("Firebase initialization failed");
+  }
+
+  fbdo.setResponseSize(2048);
+
+  Serial.println("Attempting to register device...");
+  String deviceId = MQTT_ID;
+  registerDevice(deviceName);
   
   Serial.println("Starting Arduino BLE Client application...");
   BLEDevice::init("tt");
