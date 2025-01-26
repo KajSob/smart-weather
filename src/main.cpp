@@ -6,8 +6,11 @@
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include "NimBLEDevice.h"
 #include <Firebase_ESP_Client.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+#include <Preferences.h>
 
 
 #define API_KEY "AIzaSyDcdQRrCx9wBN-BE_7iKngGp9Vojm59zbM"
@@ -49,6 +52,10 @@ emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
 #define DATABASE_USER "pionier@gmail.com"
 #define DATABASE_PASS "pionier123"
 
+Preferences preferences;
+#define SERVICE_UUID        "12345678-1234-1234-1234-123456789012"
+#define CHARACTERISTIC_UUID "87654321-4321-4321-4321-210987654321"
+
 FirebaseData fbdo;
 FirebaseJson firebaseJson;
 FirebaseAuth auth;
@@ -70,8 +77,8 @@ const int mqtt_port = 8883;
 const char* mqtt_user = "admin"; 
 const char* mqtt_password = "cdV8Sa5eMRGuV3m";   
 
-const char* ssid = "SkipperWiFi";
-const char* password = "kupsewlasny";
+String ssid = "";
+String password = "";
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
@@ -85,7 +92,7 @@ PubSubClient client(espClient);
 const int photoResistorPin = 15;
 int sensorValue = 0;
 int delayTime = 2000;
-const char* delay_topic = "weather-station/config/interval";
+const char* delay_topic = "weather-station/4tmYZsl99D/config/interval";
 
 unsigned long previousMillis = 0;
 
@@ -115,6 +122,82 @@ int s=0;
 float temp_ble = 0;
 float humi_ble = 0;
 float voltage_ble = 0;
+
+const unsigned long WIFI_TIMEOUT = 10000;
+const int WIFI_RETRY_DELAY = 5000;
+
+
+void saveWiFiCredentials(String ssid, String password) {
+  preferences.begin("wifi", false);
+  preferences.putString("ssid", ssid);
+  preferences.putString("password", password);
+  preferences.end();
+}
+void loadWiFiCredentials() {
+  preferences.begin("wifi", true);
+  ssid = preferences.getString("ssid", "");
+  password = preferences.getString("password", "");
+  preferences.end();
+  Serial.println("Dane Wi-Fi odczytane z pamięci:");
+  Serial.print("SSID: ");
+  Serial.println(ssid);
+  Serial.print("Password: " );
+  Serial.println(password);
+}
+class MyCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+  std::string value = pCharacteristic->getValue();
+
+  if (value.length() > 0) {
+    int separatorIndex = value.find(';');
+    if (separatorIndex != std::string::npos) {
+      ssid = value.substr(0, separatorIndex).c_str();
+      password = value.substr(separatorIndex + 1).c_str();
+      saveWiFiCredentials(ssid, password);
+      Serial.println("Dane Wi-Fi odebrane:");
+      Serial.print("SSID: " );
+      Serial.println(ssid);
+      Serial.print("Password: ");
+      Serial.println( password);
+
+      // Sprawdzanie, czy SSID i hasło nie są puste
+      if (!ssid.isEmpty() && !password.isEmpty()) {
+        WiFi.begin(ssid.c_str(), password.c_str());
+      } else {
+        Serial.println("Błąd: SSID lub hasło jest puste.");
+      }
+    }
+  }
+}
+
+};
+bool connectToWiFi() {
+    Serial.println("Attempting WiFi connection...");
+    
+    WiFi.disconnect(true);
+    delay(1000);
+    
+    WiFi.begin(ssid.c_str(), password.c_str());
+
+    saveWiFiCredentials(ssid.c_str(), password.c_str());
+    
+    unsigned long startTime = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startTime < WIFI_TIMEOUT) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println();
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("Connected to WiFi");
+        Serial.print("IP: ");
+        Serial.println(WiFi.localIP());
+        return true;
+    }
+    
+    Serial.println("Failed to connect");
+    return false;
+}
 
 void registerDevice(String deviceName)
 {
@@ -184,9 +267,9 @@ bool connectToServer(BLEAddress pAddress) {
   Serial.println(value.c_str());
 
   if(pClient->getPeerAddress().toString().c_str()==mac_address)
-  pRemoteCharacteristic->subscribe(true, notifyCallback);
-  BLEconnected = true;//added
-  return true;//added
+  pRemoteCharacteristic->registerForNotify(notifyCallback);
+  BLEconnected = true;
+  return true;
 }
 
 void turnOffAllLEDs()
@@ -263,10 +346,48 @@ void callback(char* topic, byte* payload, unsigned int length) {
         }
     }
 }
+void startBLEServer() {
+  BLEDevice::init("ESP32 BLE Wi-Fi Configurator");
+  BLEServer *pServer = BLEDevice::createServer();
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+  BLECharacteristic *pCharacteristic = pService->createCharacteristic(
+    CHARACTERISTIC_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+
+  pCharacteristic->setCallbacks(new MyCallbacks());
+  pService->start();
+
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->start();
+  Serial.println("BLE Configurator gotowy. Oczekuję danych Wi-Fi...");
+}
+
 
 void setup() {
   Wire.begin(8,9);
   Serial.begin(115200);
+  loadWiFiCredentials();
+  if (ssid.isEmpty() && password.isEmpty()) {
+    ssid = "brak_ssid";
+    password = "brak_hasla";
+  }
+  WiFi.begin(ssid.c_str(), password.c_str());
+  if(WiFi.status() == WL_CONNECTED){
+    Serial.println("Połączono za pierwszym razem z Wi-Fi!");
+  }
+  // Inicjalizacja BLE
+  startBLEServer();
+  while(WiFi.status() != WL_CONNECTED){
+      Serial.println("Oczekiwanie na WiFi...");
+      delay(1000);
+      connectToWiFi();
+    }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Połączono z Wi-Fi!");
+    Serial.print("Adres IP: ");
+    Serial.println(WiFi.localIP());
+  }
   bme.begin(0x76);
   tft.init();
   tft.setRotation(1);
@@ -294,7 +415,6 @@ void setup() {
   pinMode(LED4_PIN, OUTPUT);
   pinMode(LED5_PIN, OUTPUT);
 
-  setup_wifi();
   client.setServer(mqtt_server, mqtt_port);
   espClient.setCACert(ca_cert);
 
@@ -324,9 +444,9 @@ void setup() {
   String deviceId = MQTT_ID;
   registerDevice(deviceName);
   
-  Serial.println("Starting Arduino BLE Client application...");
-  BLEDevice::init("tt");
-  connectToServer(BLEAddress(mac_address));
+  //Serial.println("Starting Arduino BLE Client application...");
+  //BLEDevice::init("tt");
+  //connectToServer(BLEAddress(mac_address));
 
   client.setCallback(callback);
 }
@@ -334,7 +454,22 @@ void setup() {
 
 void loop() {
 
+
   unsigned long currentMillis = millis();
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Rozłączono z Wi-Fi.");
+    
+    // Restart BLE do ponownej konfiguracji
+    BLEDevice::deinit();
+    startBLEServer();
+    
+    while(WiFi.status() != WL_CONNECTED){
+      Serial.println("Oczekiwanie na WiFi...");
+      delay(1000);
+      connectToWiFi();
+      client.loop(); // Pozwól na obsługę BLE
+    }
+  }
 
   if (!client.connected()) {
         reconnect();
@@ -388,13 +523,13 @@ void loop() {
   Serial.println();
 
   if (client.connected()) {
-    client.publish("weather-station/sensors/temperature", String(temp).c_str());
-    client.publish("weather-station/sensors/humidity", String(hum).c_str());
-    client.publish("weather-station/sensors/pressure", String(press).c_str());
-    client.publish("weather-station/sensors/light", String(lux).c_str());
-    client.publish("weather-station/sensors/tvoc", String(tvoc).c_str()); 
-    client.publish("weather-station/sensors/aqui", String(aqi).c_str());
-    client.publish("weather-station/sensors/c02", String(co2).c_str());  
+    client.publish("weather-station/4tmYZsl99D/sensors/temperature", String(temp).c_str());
+    client.publish("weather-station/4tmYZsl99D/sensors/humidity", String(hum).c_str());
+    client.publish("weather-station/4tmYZsl99D/sensors/pressure", String(press).c_str());
+    client.publish("weather-station/4tmYZsl99D/sensors/light", String(lux).c_str());
+    client.publish("weather-station/4tmYZsl99D/sensors/tvoc", String(tvoc).c_str()); 
+    client.publish("weather-station/4tmYZsl99D/sensors/aqui", String(aqi).c_str());
+    client.publish("weather-station/4tmYZsl99D/sensors/c02", String(co2).c_str());  
   } else {
     Serial.println("MQTT nie jest połączony!");
   }
@@ -435,16 +570,16 @@ void loop() {
   tft.print(lux);
   tft.println(" lux");
 
-  if (BLEconnected) {
-    tft.setCursor(10, 220);
-    tft.print("BLE Device tmp: ");
-    tft.print(temp_ble);
-    tft.print(" *C");
-  }
-  else {
-    tft.setCursor(10, 220);
-    tft.println("BLE Device: not connected");
-  }
+  // if (BLEconnected) {
+  //   tft.setCursor(10, 220);
+  //   tft.print("BLE Device tmp: ");
+  //   tft.print(temp_ble);
+  //   tft.print(" *C");
+  // }
+  // else {
+  //   tft.setCursor(10, 220);
+  //   tft.println("BLE Device: not connected");
+  // }
 
 }
 }
